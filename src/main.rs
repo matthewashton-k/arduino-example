@@ -1,67 +1,122 @@
-#![feature(abi_avr_interrupt)]
+#![feature(abi_avr_interrupt, type_alias_impl_trait)]
+#![feature(trait_alias)]
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
 
+use core::{cell::Cell, borrow::Borrow};
+use avr_tc1_embassy_time::{define_interrupt, init_system_time};
 use embassy_executor::Spawner;
-use arduino_hal::{pins, Peripherals, simple_pwm::{PwmPinOps, IntoPwmPin, Timer2Pwm, Prescaler, Timer1Pwm}};
-use arduino_hal::delay_ms;
+use arduino_hal::{
+    default_serial, pac::USART0, pins, Peripherals,
+    simple_pwm::{IntoPwmPin, Timer0Pwm, Timer2Pwm, Prescaler},
+    port,
+};
+use arduino_hal::prelude::_unwrap_infallible_UnwrapInfallible;
 use avr_device;
+use embassy_sync::{
+    blocking_mutex::{CriticalSectionMutex, raw::NoopRawMutex},
+    channel::{self, Channel},
+    watch::{Sender, Watch}, signal::Signal,
+};
+use embassy_time::Timer;
 use panic_halt as _;
 
-#[embassy_executor::main]
-async fn main(_spawner: Spawner) {
-    // Take ownership of the device peripherals
-    let mut dp = Peripherals::take().unwrap();
+// Not used in this implementation, but provided as context
+enum Mode {
+    On,
+    Off,
+}
 
+define_interrupt!(atmega328p);
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    // Initialize peripherals and system time
+    let mut dp = Peripherals::take().unwrap();
+    init_system_time(&mut dp.TC1);
+    unsafe { avr_device::interrupt::enable() };
+
+    // Setup PWM timers
+    let mut timer0 = Timer0Pwm::new(dp.TC0, Prescaler::Prescale64);
     let mut timer2 = Timer2Pwm::new(dp.TC2, Prescaler::Prescale64);
-    let mut timer1 = Timer1Pwm::new(dp.TC1, Prescaler::Prescale64);
 
     let pins = pins!(dp);
-    let mut r = pins.d11.into_output();
-    let mut g = pins.d10.into_output();
-    let mut b = pins.d9.into_output();
+    // Choose pins for the RGB LED
+    let r_pin = pins.d11.into_output();
+    let g_pin = pins.d5.into_output();
+    let b_pin = pins.d6.into_output();
 
-    let mut r = r.into_pwm(&mut timer2);
-    let mut g = g.into_pwm(&mut timer1);
-    let mut b = b.into_pwm(&mut timer1);
+    // Convert pins into PWM channels
+    let mut r = r_pin.into_pwm(&mut timer2);
+    let mut g = g_pin.into_pwm(&mut timer0);
+    let mut b = b_pin.into_pwm(&mut timer0);
     r.enable();
     g.enable();
     b.enable();
     
+    let mut serial = default_serial!(dp, pins, 57600);
+
+    let mut channel = Signal::<NoopRawMutex, char>::new();
+    let channel: &'static Signal<NoopRawMutex, char> = unsafe {
+        &*((&channel) as *const _)
+    };
+
+    spawner.spawn(read_task(channel)).unwrap();
+
     let max_duty: u8 = 255;
 
-    // lower duty cycle apparantly means its brighter lord knows why
     loop {
-        // red to green
-        for step in 0..=max_duty {
-            let red_intensity   = max_duty - step; // Red fades from 255 to 0.
-            let green_intensity = step;            // Green fades from 0 to 255.
-            let blue_intensity  = 0;                // Blue remains off.
-            r.set_duty(max_duty - red_intensity);
-            g.set_duty(max_duty - green_intensity);
-            b.set_duty(max_duty - blue_intensity);
-            delay_ms(5);
+        if channel.signaled() {
+            if channel.wait().await == 'f' {
+                r.set_duty(255);
+                g.set_duty(255);
+                b.set_duty(255);
+                while channel.wait().await != 'o' {
+                    Timer::after_micros(10).await;
+                }
+            }
         }
 
         for step in 0..=max_duty {
-            let green_intensity = max_duty - step; // Green fades from 255 to 0.
-            let blue_intensity  = step;            // Blue fades from 0 to 255.
-            let red_intensity   = 0;                // Red remains off.
-            r.set_duty(max_duty - red_intensity);
-            g.set_duty(max_duty - green_intensity);
-            b.set_duty(max_duty - blue_intensity); 
-            delay_ms(5);
+            if channel.signaled() {
+                break;
+            }
+            r.set_duty(step);
+            g.set_duty(max_duty - step);
+            b.set_duty(max_duty);
+            Timer::after_millis(20).await;
+        }
+
+        // from green to blue
+        for step in 0..=max_duty {
+            if channel.signaled() {
+                break;
+            }
+            g.set_duty(step);
+            b.set_duty(max_duty - step);
+            Timer::after_millis(20).await;
         }
 
         for step in 0..=max_duty {
-            let blue_intensity = max_duty - step;  // Blue fades from 255 to 0.
-            let red_intensity  = step;             // Red fades from 0 to 255.
-            let green_intensity = 0;               // Green remains off.
-            r.set_duty(max_duty - red_intensity);
-            g.set_duty(max_duty - green_intensity);
-            b.set_duty(max_duty - blue_intensity);
-            delay_ms(5);
+            if channel.signaled() {
+                break;
+            }
+            b.set_duty(step);
+            r.set_duty(max_duty - step);
+            Timer::after_millis(20).await;
         }
+    }
+}
+
+#[embassy_executor::task]
+async fn read_task(signal: &'static Signal<NoopRawMutex, char>) {
+    let usart = unsafe { &*USART0::ptr() };
+    loop {
+        if usart.ucsr0a.read().rxc0().bit_is_set() {
+            let byte = usart.udr0.read().bits() as char;
+            signal.signal(byte);
+        }
+        Timer::after_micros(10).await;
     }
 }

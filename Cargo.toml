@@ -9,6 +9,15 @@ avr-device = { version = "0.5.3", features = ["rt","atmega328p", "critical-secti
 embassy-executor = { version = "0.7.0", features = ["arch-avr", "executor-thread", "nightly"] }
 panic-halt = "1"
 arduino-hal = { git = "https://github.com/rahix/avr-hal", rev = "65b304ec974a13f27ebc2ced21aa462c4b81ce82", features = ["arduino-uno"] }
+ufmt = "0.2.0"
+embassy-time = "0.3.0"
+embassy-sync = "0.6.2"
+
+
+[dependencies.avr_tc1_embassy_time]
+git = "https://github.com/djdisodo/avr_embassy_time.git"
+default-features = false
+features = ["prescalar64"]
 
 [profile.dev]
 panic = "abort"
