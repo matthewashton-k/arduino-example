@@ -1,0 +1,26 @@
+[package]
+edition = "2021"
+name = "avr"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+avr-device = { version = "0.5.3", features = ["rt","atmega328p", "critical-section-impl"] }
+embassy-executor = { version = "0.7.0", features = ["arch-avr", "executor-thread", "nightly"] }
+panic-halt = "1"
+arduino-hal = { git = "https://github.com/rahix/avr-hal", rev = "65b304ec974a13f27ebc2ced21aa462c4b81ce82", features = ["arduino-uno"] }
+
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "s"
+
+[env]
+AVR_EMBASSY_TIME_QUEUE_SIZE=4
